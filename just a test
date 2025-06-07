@@ -1,0 +1,147 @@
+# ============================================================
+# 0.  IMPORTS  (same as before)
+# ============================================================
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import ipywidgets as widgets
+from IPython.display import display, clear_output
+
+# ============================================================
+# 1.  FIXED INPUT DATA  (unchanged)
+# ============================================================
+exc_labels   = ["X1", "Y1", "X2", "Y2", "IL1", "IL2"]
+exc_energies = np.array([2340.2, 2342.0, 2342.3, 2343.8, 2379.5, 2383.5])   # meV
+exc_phi_deg  = np.array([146.0, 56.0, 124.0, 34.0, 50.0, 49.0])
+
+# Coupling amplitudes
+g_intra, g_inter = 40.0, 0.4   # meV
+phi_rad          = np.deg2rad(exc_phi_deg)
+g_x, g_y         = np.empty(6), np.empty(6)
+for i in range(6):
+    g_ref = g_intra if i < 4 else g_inter
+    g_x[i] = g_ref * np.sin(phi_rad[i])
+    g_y[i] = g_ref * np.cos(phi_rad[i])
+
+# Optical indices
+n_eff, n_out = 2.2, 1.0
+
+# Grid in k_parallel
+k_min, k_max, N_k   = 10.0, 15, 300         # µm⁻¹, number of points
+k_grid       = np.linspace(k_min, k_max, N_k)
+
+# Constants
+ħc_meV_um = 197.326              # ħc in meV·µm
+N_tot      = 8                   # 2 photons + 6 excitons
+
+# ============================================================
+# 2.  CORE FUNCTIONS  (depend on E_ph0, so will be re-created)
+# ============================================================
+def make_helpers(E_ph0):
+    """Return photon dispersion & Hopfield routines for a chosen E_ph0 (meV)."""
+
+    α = ħc_meV_um**2 / (2 * n_eff**2 * E_ph0)        # quadratic coefficient
+
+    def E_photon(k):                      # confined photon mode
+        return E_ph0 + α * k**2
+
+    def E_vac(k):                         # vacuum light line
+        return (ħc_meV_um / n_out) * k
+
+    def hopfield_matrix(k):
+        H = np.zeros((N_tot, N_tot))
+        E_ph = E_photon(k)
+        H[0, 0] = H[1, 1] = E_ph
+        for j in range(6):
+            H[j+2, j+2] = exc_energies[j]
+            H[0, j+2] = H[j+2, 0] = g_x[j]
+            H[1, j+2] = H[j+2, 1] = g_y[j]
+        return H
+
+    def diag(k):
+        """Eigen-energies, |C|², φ_new at k_parallel."""
+        e, vec = np.linalg.eigh(hopfield_matrix(k))
+        idx    = np.argsort(e)
+        e, vec = e[idx], vec[:, idx]
+        w      = np.abs(vec) ** 2
+        # hybrid dipole azimuth
+        cosφ, sinφ = np.cos(phi_rad), np.sin(phi_rad)
+        φ_new = []
+        for col in range(N_tot):
+            w_exc = w[2:, col]
+            dx, dy = np.sum(w_exc * cosφ), np.sum(w_exc * sinφ)
+            φ_new.append(np.rad2deg(np.arctan2(dy, dx)) % 360.0)
+        return e, w, np.array(φ_new)
+    # return three callables
+    return E_photon, E_vac, diag
+
+# ============================================================
+# 3.  INTERACTIVE CALLBACK
+# ============================================================
+def update(E_ph0):
+    clear_output(wait=True)      # avoid flicker
+    E_photon, E_vac, diag = make_helpers(E_ph0)
+
+    # 3a. dispersion
+    disp = np.zeros((N_tot, N_k))
+    for j, k in enumerate(k_grid):
+        disp[:, j] = diag(k)[0]
+
+    # 3b. crossings with vacuum light line (first radiative point)
+    cross_E  = np.full(N_tot, np.nan)
+    cross_k  = np.full(N_tot, np.nan)
+    cross_w  = np.zeros((N_tot, N_tot))
+    cross_φ  = np.full(N_tot, np.nan)
+
+    for b in range(N_tot):
+        diff = disp[b] - E_vac(k_grid)
+        sgn  = np.sign(diff)
+        idxs = np.where(sgn[:-1] * sgn[1:] < 0)[0]
+        if idxs.size:
+            j = idxs[0]
+            k_c = k_grid[j]
+            e, w, φ = diag(k_c)
+            cross_E[b] = e[b]
+            cross_k[b] = k_c
+            cross_w[:, b] = w[:, b]
+            cross_φ[b]    = φ[b]
+
+    # 3c. plot
+    plt.figure(figsize=(7, 5))
+    for b in range(N_tot):
+        plt.plot(k_grid, disp[b], lw=1)
+    plt.plot(k_grid, E_vac(k_grid), 'k--', lw=1, label='vacuum light line')
+    plt.scatter(cross_k, cross_E, c='r', s=25, label='1st radiative point')
+    plt.xlabel(r'$k_{\parallel}$ (µm$^{-1}$)')
+    plt.ylabel('Energy (meV)')
+    plt.title(fr'Polariton dispersion — $E_{{\rm ph,0}}={E_ph0:.0f}$ meV')
+    plt.legend(fontsize=8)
+    plt.tight_layout()
+    plt.show()
+
+    # 3d. table
+    pol_labels = [f'Polariton {i+1}' for i in range(N_tot)]
+    origin     = ['Photon_x', 'Photon_y'] + exc_labels
+    df = pd.DataFrame(index=pol_labels)
+    df['E_cross (meV)'] = cross_E
+    df['k_cross (µm⁻¹)'] = cross_k
+    for i, o in enumerate(origin):
+        df[f'|C_{o}|²'] = cross_w[i]
+    df['φ_new (deg)'] = cross_φ
+    display(df.round(4))
+
+# ============================================================
+# 4.  SLIDER FOR E_ph0  (new!)
+# ============================================================
+slider_E0 = widgets.FloatSlider(
+    value = 2343.0,
+    min   = 1000.0,
+    max   = 3000.0,
+    step  = 5.0,
+    description = r'E_ph,0 (meV)',
+    continuous_update = True,
+    style={'description_width':'initial'},
+    layout=widgets.Layout(width='80%')
+)
+
+widgets.interact(update, E_ph0=slider_E0);
