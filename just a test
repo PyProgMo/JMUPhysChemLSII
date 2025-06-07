@@ -145,3 +145,12 @@ slider_E0 = widgets.FloatSlider(
 )
 
 widgets.interact(update, E_ph0=slider_E0);
+
+# ============================================================
+'''
+Feedback: Nice test file, the code is very easy to access and see publicly, maybe for development, it would be good to have more comments explaining the purpose of each section.
+Very nice first try on the github repository of the group, I hope it will be useful for the future.
+
+For the python file, running the code as raw .py file, no sliders appeared (but I think it is normal, as the sliders are for Jupyter notebooks).
+
+'''
